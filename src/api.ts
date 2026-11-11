@@ -22,11 +22,16 @@ export const platform: "android" | "ios" | "windows" | "macos" | "linux" =
 /** 移动端（安卓 / iOS）共用触屏界面 */
 export const isMobile = isAndroid || isIos;
 
+/** Web（浏览器直连服务器）模式：没有 Tauri 运行时即认为在浏览器里。
+ *  此时不走自定义协议，媒体与 RPC 全部走同源 HTTP（见 src/web/core.ts 与 server/）。 */
+const WEB_MODE = typeof (globalThis as Record<string, unknown>).__TAURI_INTERNALS__ === "undefined";
+
 /** 自定义协议地址随平台不同（见 tauri `register_asynchronous_uri_scheme_protocol` 文档）：
  *  Windows / Android → `http://<scheme>.localhost`
  *  macOS / iOS / Linux → `<scheme>://localhost`
- *  Rust 侧 `src-tauri/src/lib.rs` 里改写 m3u8 用的 scheme 必须与此一致。 */
-export const LOCAL = isMacos || isIos || isLinux ? "hg://localhost" : "http://hg.localhost";
+ *  Rust 侧 `src-tauri/src/lib.rs` 里改写 m3u8 用的 scheme 必须与此一致。
+ *  Web 模式下为空串：`/hls`、`/img`、`/seg` 直接用同源相对路径（服务器 HTTP 代理端点）。 */
+export const LOCAL = WEB_MODE ? "" : (isMacos || isIos || isLinux ? "hg://localhost" : "http://hg.localhost");
 
 /** src 是否已是本地协议地址（避免在详情页把代理地址再包一层） */
 export const isLocalMedia = (src: string) => src.startsWith(`${LOCAL}/`);

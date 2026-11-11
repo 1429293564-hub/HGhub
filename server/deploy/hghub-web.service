@@ -1,0 +1,22 @@
+[Unit]
+Description=HGhub Web Service (axum + Rust core)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/hghub-web
+# 验证阶段只绑本机：本地验通后在 /opt/hghub-web/.env 里改成 0.0.0.0:8900 并 systemctl restart
+EnvironmentFile=/opt/hghub-web/.env
+ExecStart=/opt/hghub-web/hghub-web
+Restart=always
+RestartSec=5
+User=hghub
+Group=hghub
+# 加固：只给写数据目录的权限
+NoNewPrivileges=true
+ProtectSystem=full
+ReadWritePaths=/opt/hghub-web
+
+[Install]
+WantedBy=multi-user.target

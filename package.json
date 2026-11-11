@@ -7,6 +7,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && tsc --project tsconfig.tests.json && vite build",
+    "build:web": "HGHUB_WEB=1 vite build",
+    "server:gen": "python server/gen.py",
     "preview": "vite preview",
     "test:playback": "node scripts/test-playback.mjs",
     "test:api-loading": "node scripts/test-api-loading.mjs",

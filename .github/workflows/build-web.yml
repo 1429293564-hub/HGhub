@@ -1,0 +1,52 @@
+name: Build Web Server
+# 构建 iOS 网页版部署包：Linux x86_64 服务端二进制 + dist-web 前端 + systemd 部署脚本
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: 构建前端（web 模式）
+        run: |
+          pnpm install --frozen-lockfile
+          HGHUB_WEB=1 pnpm build
+
+      - name: 生成 server 复用模块
+        run: python3 server/gen.py
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: server
+
+      - name: 构建服务端
+        run: cargo build --release
+        working-directory: server
+
+      - name: 打包部署产物
+        run: |
+          mkdir -p bundle
+          cp server/target/release/hghub-web bundle/
+          cp -r dist-web bundle/dist-web
+          cp server/deploy/hghub-web.service bundle/
+          cp server/deploy/deploy.sh bundle/
+          cp server/README.md bundle/
+          tar czf hghub-web-linux.tar.gz -C bundle .
+          sha256sum hghub-web-linux.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: webserver-linux
+          path: hghub-web-linux.tar.gz
