@@ -1,0 +1,17 @@
+name: macOS Test
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["main"]
+    paths: [".github/workflows/macos-test.yml"]
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, macos-14]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - run: echo "hello from ${{ matrix.os }}" && sw_vers
