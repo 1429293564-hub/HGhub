@@ -14,12 +14,17 @@
 //! - `HGHUB_DIST_DIR`      前端静态目录，默认 `./dist-web`
 
 mod api;
+#[path = "../../src-tauri/src/lines.rs"]
 mod lines;
+#[path = "../../src-tauri/src/logging.rs"]
 mod logging;
 mod media;
+#[path = "../../src-tauri/src/net.rs"]
 mod net;
+#[path = "../../src-tauri/src/network_policy.rs"]
 mod network_policy;
 mod playback_log;
+#[path = "../../src-tauri/src/session.rs"]
 mod session;
 
 use std::path::PathBuf;
@@ -53,7 +58,8 @@ fn read_cookie(req: &Request) -> Option<String> {
     let raw = req.headers().get(header::COOKIE)?.to_str().ok()?;
     for pair in raw.split(';') {
         let pair = pair.trim();
-        if let Some(v) = pair.strip_prefix(&format!("{cookie_name()}=")) {
+        let cname = cookie_name();
+        if let Some(v) = pair.strip_prefix(&format!("{cname}=")) {
             return Some(v.to_string());
         }
     }
@@ -142,9 +148,10 @@ async fn login_submit(axum::extract::Form(form): axum::extract::Form<LoginForm>)
     };
     if ok {
         let mut resp = Redirect::to("/").into_response();
+        let cname = cookie_name();
+        let token = WEB_TOKEN.get().map(String::as_str).unwrap_or_default();
         if let Ok(v) = HeaderValue::from_str(&format!(
-            "{cookie_name()}={}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000",
-            WEB_TOKEN.get().map(String::as_str).unwrap_or_default(),
+            "{cname}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000",
         )) {
             resp.headers_mut().insert(header::SET_COOKIE, v);
         }
@@ -180,7 +187,16 @@ async fn rpc(State(api): State<std::sync::Arc<Api>>, req: Request) -> Response {
     let cmd = parsed.get("cmd").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let args = parsed.get("args").cloned().unwrap_or(json!({}));
 
-    let result: Result<Value, String> = match cmd.as_str() {
+    let result = dispatch(&api, &cmd, &args).await;
+    match result {
+        Ok(v) => axum::Json(json!({ "result": v })).into_response(),
+        Err(e) => rpc_err(e),
+    }
+}
+
+/// 命令分发：签名与桌面端 invoke_handler 一一对应；`?` 在此可用。
+async fn dispatch(api: &Api, cmd: &str, args: &Value) -> Result<Value, String> {
+    match cmd {
         "app_boot" => api::app_boot(&api).await,
         "security_set" => v(api::security_set(arg(&args, "strict")?).await),
         "debug_log" => v(api::debug_log(arg(&args, "msg")?).await),
@@ -259,12 +275,7 @@ async fn rpc(State(api): State<std::sync::Arc<Api>>, req: Request) -> Response {
         "playback_log_set" => v(playback_log::playback_log_set(arg(&args, "enabled")?)),
         "playback_log_write" => v(playback_log::playback_log_write(arg(&args, "entries")?)),
         "playback_log_read" => playback_log::playback_log_read().map(Value::String),
-        _ => return rpc_err(format!("未知命令: {cmd}")),
-    };
-
-    match result {
-        Ok(v) => axum::Json(json!({ "result": v })).into_response(),
-        Err(e) => rpc_err(e),
+        _ => return Err(format!("未知命令: {cmd}")),
     }
 }
 

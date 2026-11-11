@@ -169,3 +169,411 @@ pub async fn set_orientation(landscape: bool) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(target_os = "ios")]
+fn request_ios_orientation(landscape: bool) {
+    use std::ffi::{c_char, c_void};
+    extern "C" {
+        fn objc_getClass(name: *const c_char) -> *mut c_void;
+        fn sel_registerName(name: *const c_char) -> *mut c_void;
+        fn objc_msgSend();
+    }
+    unsafe {
+        let msg0: unsafe extern "C" fn(*mut c_void, *mut c_void) -> *mut c_void =
+            std::mem::transmute(objc_msgSend as *const ());
+        let msg0_usize: unsafe extern "C" fn(*mut c_void, *mut c_void) -> usize =
+            std::mem::transmute(objc_msgSend as *const ());
+        let msg1_usize: unsafe extern "C" fn(*mut c_void, *mut c_void, usize) -> *mut c_void =
+            std::mem::transmute(objc_msgSend as *const ());
+        let msg2_ptr: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void, *mut c_void) =
+            std::mem::transmute(objc_msgSend as *const ());
+        let msg1_void: unsafe extern "C" fn(*mut c_void, *mut c_void) =
+            std::mem::transmute(objc_msgSend as *const ());
+
+        // 1. iOS 16+ UIWindowScene.requestGeometryUpdateWithPreferences:errorHandler:
+        // UIInterfaceOrientationMaskPortrait = 1 << 1 = 2
+        // UIInterfaceOrientationMaskLandscapeRight = 1 << 3 = 8
+        let mask: usize = if landscape { 8 } else { 2 };
+        let prefs_cls = objc_getClass(b"UIWindowSceneGeometryPreferencesIOS\0".as_ptr() as *const c_char);
+        let app_cls = objc_getClass(b"UIApplication\0".as_ptr() as *const c_char);
+        if !prefs_cls.is_null() && !app_cls.is_null() {
+            let sel_alloc = sel_registerName(b"alloc\0".as_ptr() as *const c_char);
+            let sel_init = sel_registerName(b"initWithInterfaceOrientations:\0".as_ptr() as *const c_char);
+            let raw_prefs = msg0(prefs_cls, sel_alloc);
+            let prefs = if !raw_prefs.is_null() {
+                msg1_usize(raw_prefs, sel_init, mask)
+            } else {
+                std::ptr::null_mut()
+            };
+
+            let sel_shared = sel_registerName(b"sharedApplication\0".as_ptr() as *const c_char);
+            let app = msg0(app_cls, sel_shared);
+            if !app.is_null() && !prefs.is_null() {
+                let sel_scenes = sel_registerName(b"connectedScenes\0".as_ptr() as *const c_char);
+                let scenes_set = msg0(app, sel_scenes);
+                if !scenes_set.is_null() {
+                    let sel_all = sel_registerName(b"allObjects\0".as_ptr() as *const c_char);
+                    let arr = msg0(scenes_set, sel_all);
+                    if !arr.is_null() {
+                        let sel_count = sel_registerName(b"count\0".as_ptr() as *const c_char);
+                        let sel_at = sel_registerName(b"objectAtIndex:\0".as_ptr() as *const c_char);
+                        let sel_req = sel_registerName(
+                            b"requestGeometryUpdateWithPreferences:errorHandler:\0".as_ptr() as *const c_char,
+                        );
+                        let sel_responds = sel_registerName(b"respondsToSelector:\0".as_ptr() as *const c_char);
+                        let msg_responds: unsafe extern "C" fn(*mut c_void, *mut c_void, *mut c_void) -> bool =
+                            std::mem::transmute(objc_msgSend as *const ());
+                        let count = msg0_usize(arr, sel_count);
+                        for i in 0..count {
+                            let scene = msg1_usize(arr, sel_at, i);
+                            if !scene.is_null() && msg_responds(scene, sel_responds, sel_req) {
+                                msg2_ptr(scene, sel_req, prefs, std::ptr::null_mut());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. Fallback: UIDevice setValue:forKey:@"orientation" + attemptRotationToDeviceOrientation
+        let dev_cls = objc_getClass(b"UIDevice\0".as_ptr() as *const c_char);
+        let num_cls = objc_getClass(b"NSNumber\0".as_ptr() as *const c_char);
+        let str_cls = objc_getClass(b"NSString\0".as_ptr() as *const c_char);
+        let vc_cls = objc_getClass(b"UIViewController\0".as_ptr() as *const c_char);
+        if !dev_cls.is_null() && !num_cls.is_null() && !str_cls.is_null() {
+            let sel_cur = sel_registerName(b"currentDevice\0".as_ptr() as *const c_char);
+            let dev = msg0(dev_cls, sel_cur);
+            let sel_num = sel_registerName(b"numberWithInteger:\0".as_ptr() as *const c_char);
+            let orient_val: usize = if landscape { 3 } else { 1 };
+            let num = msg1_usize(num_cls, sel_num, orient_val);
+            let sel_str = sel_registerName(b"stringWithUTF8String:\0".as_ptr() as *const c_char);
+            let msg_str: unsafe extern "C" fn(*mut c_void, *mut c_void, *const c_char) -> *mut c_void =
+                std::mem::transmute(objc_msgSend as *const ());
+            let key = msg_str(str_cls, sel_str, b"orientation\0".as_ptr() as *const c_char);
+            if !dev.is_null() && !num.is_null() && !key.is_null() {
+                let sel_set_val = sel_registerName(b"setValue:forKey:\0".as_ptr() as *const c_char);
+                msg2_ptr(dev, sel_set_val, num, key);
+            }
+            if !vc_cls.is_null() {
+                let sel_attempt = sel_registerName(b"attemptRotationToDeviceOrientation\0".as_ptr() as *const c_char);
+                msg1_void(vc_cls, sel_attempt);
+            }
+        }
+    }
+}
+
+/* ───────────────────────── 会话 ───────────────────────── */
+
+pub async fn app_boot(state: &Api) -> Result<Value, String> {
+    let origin = base();
+    Ok(json!({
+        "user": state.session.user(&origin),
+        "logged_in": state.session.token(&origin).is_some(),
+        "base": origin,
+        "strict_security": crate::network_policy::strict_security(),
+        "cli_relaxed": crate::network_policy::cli_strict_override() == Some(false),
+    }))
+}
+
+/// 切换严格安全模式（关闭后回退到兼容清洗与网络守卫模式，立即生效并落盘）。
+pub async fn security_set(strict: bool) -> Result<bool, String> {
+    crate::network_policy::set_strict_security(strict)?;
+    crate::net::refresh_client();
+    crate::playback_log::record(
+        "security.mode_changed",
+        json!({"strict": crate::network_policy::strict_security()}),
+    );
+    Ok(crate::network_policy::strict_security())
+}
+
+pub async fn api_login(
+    state: &Api,
+    username: String,
+    password: String,
+) -> Result<Value, String> {
+    let origin = base();
+    let data = edge(
+        &origin,
+        "POST",
+        "/api/account/loginByPassword",
+        Some(json!({ "username": username, "password": password })),
+        None,
+    )
+    .await?;
+    let token = data
+        .get("token")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "登录返回缺少 token".to_string())?
+        .to_string();
+    let user = data.get("user").cloned().unwrap_or(Value::Null);
+    if base() != origin {
+        return Err("登录期间线路已变化，请重新登录".into());
+    }
+    state.session.set(&origin, token, user.clone());
+    Ok(json!({ "user": user }))
+}
+
+pub async fn api_register(
+    state: &Api,
+    username: String,
+    password: String,
+    email: String,
+) -> Result<Value, String> {
+    let origin = base();
+    let mut body = json!({
+        "username": username,
+        "password": password,
+        "confirm_password": password,
+    });
+    if !email.trim().is_empty() {
+        body["email"] = json!(email);
+    }
+    let data = edge(
+        &origin,
+        "POST",
+        "/api/account/registerByPassword",
+        Some(body),
+        None,
+    )
+    .await?;
+    let token = data
+        .get("token")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| "注册返回缺少 token".to_string())?
+        .to_string();
+    let user = data.get("user").cloned().unwrap_or(Value::Null);
+    if base() != origin {
+        return Err("注册期间线路已变化，请重新登录".into());
+    }
+    state.session.set(&origin, token, user.clone());
+    Ok(json!({ "user": user }))
+}
+
+pub async fn api_logout(state: &Api) -> Result<Value, String> {
+    let origin = base();
+    let token = state.session.token(&origin);
+    let _ = edge(
+        &origin,
+        "POST",
+        "/api/account/logout",
+        None,
+        token.as_deref(),
+    )
+    .await;
+    state.session.clear();
+    Ok(json!({ "ok": true }))
+}
+
+pub async fn api_me(state: &Api) -> Result<Value, String> {
+    let origin = base();
+    let token = state.session.token(&origin);
+    let me = edge(&origin, "GET", "/api/account/me", None, token.as_deref()).await?;
+    if base() != origin {
+        return Err("读取账号期间线路已变化".into());
+    }
+    if let Some(token) = state.session.token(&origin) {
+        state.session.set(&origin, token, me.clone());
+    }
+    Ok(me)
+}
+
+/* ───────────────────────── 列表 ───────────────────────── */
+
+pub async fn api_feed(state: &Api, page: u32, size: u32) -> Result<Value, String> {
+    state
+        .get(&format!("/api/videos?page={page}&size={size}"))
+        .await
+}
+
+pub async fn api_category(
+    state: &Api,
+    cate: String,
+    page: u32,
+    size: u32,
+) -> Result<Value, String> {
+    state
+        .get(&format!(
+            "/api/videos/category/{cate}?page={page}&size={size}"
+        ))
+        .await
+}
+
+pub async fn api_rank(state: &Api, kind: String) -> Result<Value, String> {
+    let kind = match kind.as_str() {
+        "recommend" | "potential" => kind,
+        _ => "hot".to_string(),
+    };
+    state.get(&format!("/api/ranks/{kind}")).await
+}
+
+pub async fn api_search(
+    state: &Api,
+    q: String,
+    page: u32,
+    size: u32,
+) -> Result<Value, String> {
+    let encoded: String = url::form_urlencoded::byte_serialize(q.as_bytes()).collect();
+    state
+        .get(&format!("/api/search?q={encoded}&page={page}&size={size}"))
+        .await
+}
+
+pub async fn api_posts(state: &Api, page: u32, size: u32) -> Result<Value, String> {
+    state
+        .get(&format!("/api/posts?page={page}&size={size}"))
+        .await
+}
+
+pub async fn api_post(state: &Api, id: i64) -> Result<Value, String> {
+    state.get(&format!("/api/posts/{id}")).await
+}
+
+/* ───────────────────────── 详情 / 播放 ───────────────────────── */
+
+pub async fn api_video(state: &Api, id: i64) -> Result<Value, String> {
+    state.get(&format!("/api/videos/{id}")).await
+}
+
+/// 新版播放接口返回 `streams.{main,hevc,preview}`，旧接口的 `video_url` 现在恒为空串。
+/// 这里把新字段回填到 `video_url` / `video_url_hevc`，前端和自检继续按原字段取流。
+fn normalize_play_info(info: &mut Value) {
+    fn non_empty(v: Option<&Value>) -> Option<String> {
+        v.and_then(|x| x.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+    }
+    let main = non_empty(info.get("streams").and_then(|s| s.get("main")));
+    let hevc = non_empty(info.get("streams").and_then(|s| s.get("hevc")));
+    let Some(obj) = info.as_object_mut() else { return };
+    for (field, stream) in [("video_url", main), ("video_url_hevc", hevc)] {
+        if let Some(url) = stream {
+            if non_empty(obj.get(field)).is_none() {
+                obj.insert(field.into(), json!(url));
+            }
+        }
+    }
+}
+
+fn has_play_url(info: &Value) -> bool {
+    info.get("video_url")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| !s.is_empty())
+}
+
+pub async fn api_play(state: &Api, id: i64, ep: u32) -> Result<Value, String> {
+    // 优先走新接口；失败或没有可用地址时再退回旧接口，两者都不行就返回新接口的结果/错误。
+    let primary = state
+        .post(&format!("/api/videos/{id}/episodes/{ep}/playback"), Some(json!({})))
+        .await
+        .map(|mut info| {
+            normalize_play_info(&mut info);
+            info
+        });
+    if let Ok(info) = &primary {
+        if has_play_url(info) {
+            return primary;
+        }
+    }
+    match state
+        .get(&format!("/api/videos/{id}/play?ep={ep}&page_texts=0"))
+        .await
+    {
+        Ok(mut legacy) => {
+            normalize_play_info(&mut legacy);
+            if has_play_url(&legacy) || primary.is_err() {
+                Ok(legacy)
+            } else {
+                primary
+            }
+        }
+        Err(_) => primary,
+    }
+}
+
+/* ───────────────────────── 评论 / 互动 ───────────────────────── */
+
+pub async fn api_comments(
+    state: &Api,
+    id: i64,
+    ep: u32,
+    page: u32,
+    size: u32,
+) -> Result<Value, String> {
+    state
+        .get(&format!(
+            "/api/videos/{id}/comments?ep={ep}&page={page}&size={size}"
+        ))
+        .await
+}
+
+pub async fn api_comment_send(
+    state: &Api,
+    id: i64,
+    ep: u32,
+    text: String,
+    reply_id: Option<i64>,
+) -> Result<Value, String> {
+    let mut body = json!({ "text": text });
+    let path = match reply_id {
+        Some(rid) if rid > 0 => {
+            body["reply_id"] = json!(rid);
+            format!("/api/videos/{id}/comments")
+        }
+        _ => format!("/api/videos/{id}/comments?ep={ep}"),
+    };
+    state.authed("POST", &path, Some(body)).await
+}
+
+pub async fn api_like(state: &Api, id: i64, ep: u32, on: bool) -> Result<Value, String> {
+    let method = if on { "POST" } else { "DELETE" };
+    state
+        .authed(method, &format!("/api/videos/{id}/like?ep={ep}"), None)
+        .await
+}
+
+pub async fn api_collect(state: &Api, id: i64, on: bool) -> Result<Value, String> {
+    let method = if on { "POST" } else { "DELETE" };
+    state
+        .authed(method, &format!("/api/videos/{id}/collect"), None)
+        .await
+}
+
+pub async fn api_follow(state: &Api, uid: i64, on: bool) -> Result<Value, String> {
+    let method = if on { "POST" } else { "DELETE" };
+    state
+        .authed(method, &format!("/api/users/{uid}/follow"), None)
+        .await
+}
+
+/* ───────────────────────── 本地缓存 ───────────────────────── */
+
+pub async fn cache_clear() -> Result<(), String> {
+    crate::media::clear_caches();
+    Ok(())
+}
+
+/* ───────────────────────── 吃瓜帖子互动 ───────────────────────── */
+
+pub async fn api_post_like(state: &Api, id: i64, on: bool) -> Result<Value, String> {
+    let method = if on { "POST" } else { "DELETE" };
+    state
+        .authed(method, &format!("/api/posts/{id}/like"), None)
+        .await
+}
+
+pub async fn api_post_collect(state: &Api, id: i64, on: bool) -> Result<Value, String> {
+    let method = if on { "POST" } else { "DELETE" };
+    state
+        .authed(method, &format!("/api/posts/{id}/collect"), None)
+        .await
+}
+
+pub async fn api_post_comments(
+    state: &Api,
+    id: i64,
+    page: u32,
+    size: u32,
+) -> Result<Value, String> {
+    state
+        .get(&format!("/api/posts/{id}/comments?page={page}&size={size}"))
+        .await
+}

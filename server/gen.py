@@ -71,8 +71,8 @@ api = re.sub(
 ''',
     api, count=1,
 )
-# request_ios_orientation 仅 iOS 用，服务器裁掉
-api = re.sub(r"(?s)#\[cfg\(target_os = \"ios\"\)\]\nfn request_ios_orientation.*", "", api)
+# request_ios_orientation 仅 iOS 用，服务器裁掉（非贪婪，只删到该函数结尾）
+api = re.sub(r"#\[cfg\(target_os = \"ios\"\)\]\nfn request_ios_orientation.*?\n\}\n", "", api)
 
 (OUT / "api.rs").write_text(api, encoding="utf-8")
 print("api.rs ok")
